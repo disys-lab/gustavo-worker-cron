@@ -16,8 +16,13 @@ Four independent actions, selected by the `ACTION` env var:
 |---|---|---|
 | `reset-nebula-credentials` | Rewrites only the `username`/`password` fields of `credential.json` | `NEBULA_USERNAME`, `NEBULA_PASSWORD` |
 | `reset-registry-credentials` | Rewrites only the `registry_username`/`registry_password`/`registry_host` fields of `credential.json` | `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `REGISTRY_HOST` |
-| `refresh-identity` | Rewrites `host.json` (host/remote IP), re-registers with reporter if configured | `DEVICE_GROUP`, `NEBULA_USERNAME`, `NEBULA_PASSWORD`; optionally `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
-| `update-worker` | Pulls a new gustavo-worker image tag and recreates the running worker container on it | `DEVICE_GROUP` (or `WORKER_CONTAINER_NAME`); optionally `WORKER_IMAGE`/`WORKER_VERSION_TAG`, `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`REGISTRY_HOST` |
+| `refresh-identity` | Rewrites `host.json` (host/remote IP), re-registers with reporter if configured | `NEBULA_USERNAME`, `NEBULA_PASSWORD`, `DEVICE_GROUP`\*; optionally `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
+| `update-worker` | Pulls a new gustavo-worker image tag and recreates the running worker container on it | `DEVICE_GROUP`\* (or `WORKER_CONTAINER_NAME`); optionally `WORKER_IMAGE`/`WORKER_VERSION_TAG`, `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`REGISTRY_HOST` |
+
+\* `DEVICE_GROUP` only needs to be passed explicitly the first time - once
+`host.json` exists (written by the worker itself at boot, or by a prior
+`refresh-identity` run), both actions read it back from there if the env
+var isn't set.
 
 Each action is fully independent and can be scheduled on its own, in any
 combination with the others. The two credential actions read-modify-write

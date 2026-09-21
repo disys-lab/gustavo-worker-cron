@@ -6,9 +6,12 @@ scheduled on its own, in any combination with the others:
 
   ACTION=reset-nebula-credentials    NEBULA_USERNAME/NEBULA_PASSWORD
   ACTION=reset-registry-credentials  REGISTRY_USERNAME/REGISTRY_PASSWORD/REGISTRY_HOST
-  ACTION=refresh-identity            DEVICE_GROUP, NEBULA_USERNAME/PASSWORD,
+  ACTION=refresh-identity            NEBULA_USERNAME/PASSWORD, DEVICE_GROUP (only
+                                      required before host.json exists - see
+                                      _resolve_device_group),
                                       REPORTER_HOST/REPORTER_PORT/REPORTER_PROTOCOL (optional)
-  ACTION=update-worker                DEVICE_GROUP or WORKER_CONTAINER_NAME,
+  ACTION=update-worker                DEVICE_GROUP (same host.json fallback) or
+                                      WORKER_CONTAINER_NAME,
                                       WORKER_IMAGE/WORKER_VERSION_TAG (optional),
                                       REGISTRY_USERNAME/PASSWORD/HOST (optional)
 
@@ -62,6 +65,27 @@ def _write_credential_file(data):
         sys.exit(2)
 
 
+def _resolve_device_group():
+    """
+    DEVICE_GROUP env var if set, else read back from host.json (written
+    there by the worker itself at boot, or by a prior refresh-identity
+    run) - so a crontab entry only needs to pass DEVICE_GROUP explicitly
+    if host.json doesn't already exist yet. Returns None if neither
+    source has it.
+    """
+    env_value = os.environ.get("DEVICE_GROUP")
+    if env_value:
+        return env_value
+    if os.path.exists(HOST_JSON_PATH):
+        try:
+            with open(HOST_JSON_PATH) as f:
+                return json.load(f).get("device_group")
+        except Exception as e:
+            print(e, file=sys.stderr)
+            print(f"failed reading device_group back from {HOST_JSON_PATH}", file=sys.stderr)
+    return None
+
+
 def reset_nebula_credentials():
     """Rewrite only the username/password fields of credential.json, preserving any registry_* fields already there."""
     data = _load_credential_file()
@@ -90,8 +114,14 @@ def refresh_identity():
     gustavo-worker's own bootstrap_identity. Reporter registration is
     best-effort: a failure there is logged but does not fail this
     action, since host.json itself was already written successfully.
+
+    DEVICE_GROUP is only required the first time (before host.json
+    exists) - see `_resolve_device_group`.
     """
-    device_group = os.environ["DEVICE_GROUP"]
+    device_group = _resolve_device_group()
+    if device_group is None:
+        print("refresh-identity: DEVICE_GROUP must be set (no existing host.json to read it back from)", file=sys.stderr)
+        sys.exit(2)
 
     if os.path.exists(HOST_JSON_PATH):
         try:
@@ -149,8 +179,12 @@ def update_worker():
     on top of what gustavo's own worker-compose/worker-script generators
     produced. A no-op if the container is already running the resolved
     image digest for the requested tag.
+
+    DEVICE_GROUP falls back to host.json if not set explicitly - see
+    `_resolve_device_group`. Only needed at all when WORKER_CONTAINER_NAME
+    isn't given directly.
     """
-    device_group = os.environ.get("DEVICE_GROUP")
+    device_group = _resolve_device_group()
     container_name = os.environ.get("WORKER_CONTAINER_NAME") or (
         f"worker_{device_group}" if device_group else None
     )
