@@ -16,13 +16,20 @@ Four independent actions, selected by the `ACTION` env var:
 |---|---|---|
 | `reset-nebula-credentials` | Rewrites only the `username`/`password` fields of `credential.json` | `NEBULA_USERNAME`, `NEBULA_PASSWORD` |
 | `reset-registry-credentials` | Rewrites only the `registry_username`/`registry_password`/`registry_host` fields of `credential.json` | `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `REGISTRY_HOST` |
-| `refresh-identity` | Rewrites `host.json` (host/remote IP), re-registers with reporter if configured | `NEBULA_USERNAME`, `NEBULA_PASSWORD`, `DEVICE_GROUP`\*; optionally `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
+| `refresh-identity` | Rewrites `host.json` (host/remote IP), re-registers with reporter if configured | `DEVICE_GROUP`\*; `NEBULA_USERNAME`/`NEBULA_PASSWORD`\*\* (only if reporter is used); optionally `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
 | `update-worker` | Pulls a new gustavo-worker image tag and recreates the running worker container on it | `DEVICE_GROUP`\* (or `WORKER_CONTAINER_NAME`); optionally `WORKER_IMAGE`/`WORKER_VERSION_TAG`, `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`REGISTRY_HOST` |
 
 \* `DEVICE_GROUP` only needs to be passed explicitly the first time - once
 `host.json` exists (written by the worker itself at boot, or by a prior
 `refresh-identity` run), both actions read it back from there if the env
 var isn't set.
+
+\*\* `NEBULA_USERNAME`/`NEBULA_PASSWORD` are only needed as a fallback -
+`refresh-identity` first tries the credential already in `credential.json`
+(the same file `reset-nebula-credentials`/the worker itself maintain),
+same as gustavo-worker's own `read_credential`. If reporter registration
+is enabled and neither source has a credential, that one step is skipped
+(logged, non-fatal) - `host.json` itself is still written.
 
 Each action is fully independent and can be scheduled on its own, in any
 combination with the others. The two credential actions read-modify-write
@@ -37,11 +44,12 @@ flags that action needs is the entire interface - no CLI subcommand.
 ```bash
 # crontab -e, on the same host the worker itself runs on:
 
-# hourly: keep remote_ip/reporter registration current
+# hourly: keep remote_ip/reporter registration current - DEVICE_GROUP and
+# the Nebula credential are both picked up automatically from host.json/
+# credential.json once they exist, so nothing else needs to be passed
 0 * * * * docker run --rm \
   -v ~/.gustavo-worker:/etc/gustavo-worker \
   -e ACTION=refresh-identity \
-  -e DEVICE_GROUP=mydevicegroup -e NEBULA_USERNAME=... -e NEBULA_PASSWORD=... \
   -e REPORTER_HOST=... -e REPORTER_PORT=8090 \
   ghcr.io/disys-lab/gustavo-worker-cron:latest
 

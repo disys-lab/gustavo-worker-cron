@@ -6,9 +6,11 @@ scheduled on its own, in any combination with the others:
 
   ACTION=reset-nebula-credentials    NEBULA_USERNAME/NEBULA_PASSWORD
   ACTION=reset-registry-credentials  REGISTRY_USERNAME/REGISTRY_PASSWORD/REGISTRY_HOST
-  ACTION=refresh-identity            NEBULA_USERNAME/PASSWORD, DEVICE_GROUP (only
-                                      required before host.json exists - see
-                                      _resolve_device_group),
+  ACTION=refresh-identity             DEVICE_GROUP (only required before host.json
+                                      exists - see _resolve_device_group),
+                                      NEBULA_USERNAME/PASSWORD (only required for the
+                                      reporter POST's auth if credential.json doesn't
+                                      already have one - see read_credential),
                                       REPORTER_HOST/REPORTER_PORT/REPORTER_PROTOCOL (optional)
   ACTION=update-worker                DEVICE_GROUP (same host.json fallback) or
                                       WORKER_CONTAINER_NAME,
@@ -31,7 +33,7 @@ import uuid
 import requests
 
 from functions.identity.identity import (
-    CREDENTIAL_JSON_PATH, HOST_JSON_PATH, _get_host_ip, _get_remote_ip,
+    CREDENTIAL_JSON_PATH, HOST_JSON_PATH, _get_host_ip, _get_remote_ip, read_credential,
 )
 from functions.docker_engine.docker_engine import DockerFunctions
 
@@ -116,7 +118,10 @@ def refresh_identity():
     action, since host.json itself was already written successfully.
 
     DEVICE_GROUP is only required the first time (before host.json
-    exists) - see `_resolve_device_group`.
+    exists) - see `_resolve_device_group`. NEBULA_USERNAME/NEBULA_PASSWORD
+    are likewise only needed as a fallback for the reporter POST's auth
+    if credential.json doesn't already have a Nebula credential in it -
+    see `read_credential`.
     """
     device_group = _resolve_device_group()
     if device_group is None:
@@ -153,7 +158,17 @@ def refresh_identity():
         return
     reporter_port = os.environ.get("REPORTER_PORT")
     reporter_protocol = os.environ.get("REPORTER_PROTOCOL", "http")
-    auth = (os.environ["NEBULA_USERNAME"], os.environ["NEBULA_PASSWORD"])
+    # Same fallback gustavo-worker's own read_credential already gives
+    # worker.py: prefers whatever's currently in credential.json (the
+    # source of truth reset-nebula-credentials and the worker itself
+    # maintain), falling back to these env vars only if the file doesn't
+    # have it yet.
+    username, password = read_credential(os.environ.get("NEBULA_USERNAME"), os.environ.get("NEBULA_PASSWORD"))
+    if not username or not password:
+        print("refresh-identity: no Nebula credential available (neither credential.json nor "
+              "NEBULA_USERNAME/NEBULA_PASSWORD) - skipping reporter registration", file=sys.stderr)
+        return
+    auth = (username, password)
     try:
         resp = requests.post(
             f"{reporter_protocol}://{reporter_host}:{reporter_port}/api/directory/{device_group}",
