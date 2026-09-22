@@ -10,7 +10,7 @@ handling from scratch.
 
 A one-shot dispatcher, not a persistent daemon - meant to be invoked by
 the host's own cron/systemd-timer, not scheduled from inside the image.
-Four independent actions, selected by the `ACTION` env var:
+Five independent actions, selected by the `ACTION` env var:
 
 | `ACTION` | Does | Needs |
 |---|---|---|
@@ -18,6 +18,7 @@ Four independent actions, selected by the `ACTION` env var:
 | `reset-registry-credentials` | Rewrites only the `registry_username`/`registry_password`/`registry_host` fields of `credential.json` | `REGISTRY_USERNAME`, `REGISTRY_PASSWORD`, `REGISTRY_HOST` |
 | `refresh-identity` | Rewrites `host.json` (host/remote IP), re-registers with reporter if configured | `DEVICE_GROUP`\*; `NEBULA_USERNAME`/`NEBULA_PASSWORD`\*\* (only if reporter is used); optionally `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
 | `update-worker` | Pulls a new gustavo-worker image tag and recreates the running worker container on it | `DEVICE_GROUP`\* (or `WORKER_CONTAINER_NAME`); optionally `WORKER_IMAGE`/`WORKER_VERSION_TAG`, `REGISTRY_USERNAME`/`REGISTRY_PASSWORD`/`REGISTRY_HOST` |
+| `change-device-group` | Moves this worker to a different device group: recreates its container as `worker_<new group>`, refreshes its identity, cleans up its stale reporter entry under the old group | `NEW_DEVICE_GROUP`, `DEVICE_GROUP`\* (or `WORKER_CONTAINER_NAME`); optionally `NEBULA_USERNAME`/`NEBULA_PASSWORD`\*\* and `REPORTER_HOST`/`REPORTER_PORT`/`REPORTER_PROTOCOL` |
 
 \* `DEVICE_GROUP` only needs to be passed explicitly the first time - once
 `host.json` exists (written by the worker itself at boot, or by a prior
@@ -89,6 +90,18 @@ rather than re-deriving them from scratch - robust to anything hand-edited
 on top of what gustavo's own generators produced. A no-op if the
 container is already running the resolved image digest for the
 requested tag.
+
+## `change-device-group` mechanics
+
+Bundles three steps into one call, since leaving any undone would leave
+the worker in an inconsistent state: recreate the container as
+`worker_<new device group>` (same clone-then-recreate approach as
+`update-worker` - env vars, volume binds, network mode, restart policy,
+and command all preserved, only `DEVICE_GROUP`'s value changes), rewrite
+`host.json` to the new device group (same `node_id` - this is a move, not
+a new identity), and remove the stale reporter entry under the old device
+group so it doesn't linger as a ghost record. A no-op if `NEW_DEVICE_GROUP`
+already matches the worker's current device group.
 
 ## Not in scope
 

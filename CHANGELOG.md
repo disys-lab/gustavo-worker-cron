@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- New `change-device-group` action: moves a worker to a different device
+  group in one call - recreates its container as `worker_<new group>`
+  (env vars, volume binds, network mode, restart policy, and command all
+  preserved), refreshes its identity to the new group (same `node_id`),
+  and removes its stale reporter entry under the old group. A no-op if
+  `NEW_DEVICE_GROUP` already matches the worker's current device group.
+- Base image bumped to `ghcr.io/disys-lab/gustavo-worker:2.7.6`.
+
 ## 0.1.2
 
 - `refresh-identity`'s Nebula credential (used for the reporter POST's

@@ -4,7 +4,7 @@
 # handling from scratch. Pinned to a specific tag (not latest) so this
 # image's own release cadence doesn't silently pick up a future
 # gustavo-worker code change it wasn't built/tested against.
-FROM ghcr.io/disys-lab/gustavo-worker:2.7.4
+FROM ghcr.io/disys-lab/gustavo-worker:2.7.6
 
 COPY cron_actions.py /worker/cron_actions.py
 

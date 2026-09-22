@@ -16,6 +16,12 @@ scheduled on its own, in any combination with the others:
                                       WORKER_CONTAINER_NAME,
                                       WORKER_IMAGE/WORKER_VERSION_TAG (optional),
                                       REGISTRY_USERNAME/PASSWORD/HOST (optional)
+  ACTION=change-device-group          NEW_DEVICE_GROUP, DEVICE_GROUP (same host.json
+                                      fallback) or WORKER_CONTAINER_NAME,
+                                      NEBULA_USERNAME/PASSWORD and
+                                      REPORTER_HOST/PORT/PROTOCOL (optional, for
+                                      reporter registration/cleanup - same fallback
+                                      as refresh-identity)
 
 The two credential actions read-modify-write the same credential.json -
 each only ever touches its own half of the file (Nebula vs. registry
@@ -107,7 +113,7 @@ def reset_registry_credentials():
     print(f"reset-registry-credentials: wrote {CREDENTIAL_JSON_PATH}")
 
 
-def refresh_identity():
+def refresh_identity(device_group=None):
     """
     Rewrite host.json (host/remote IP) and re-register with reporter if configured.
 
@@ -117,13 +123,20 @@ def refresh_identity():
     best-effort: a failure there is logged but does not fail this
     action, since host.json itself was already written successfully.
 
-    DEVICE_GROUP is only required the first time (before host.json
-    exists) - see `_resolve_device_group`. NEBULA_USERNAME/NEBULA_PASSWORD
-    are likewise only needed as a fallback for the reporter POST's auth
-    if credential.json doesn't already have a Nebula credential in it -
-    see `read_credential`.
+    Parameters
+    ----------
+    device_group : str, optional
+        Overrides `_resolve_device_group()` - used by `change_device_group`
+        to write the *new* device group before host.json's own stale
+        value would otherwise be read back. When not given (the ACTIONS
+        dispatch case), DEVICE_GROUP is only required the first time
+        (before host.json exists) - see `_resolve_device_group`.
+        NEBULA_USERNAME/NEBULA_PASSWORD are likewise only needed as a
+        fallback for the reporter POST's auth if credential.json doesn't
+        already have a Nebula credential in it - see `read_credential`.
     """
-    device_group = _resolve_device_group()
+    if device_group is None:
+        device_group = _resolve_device_group()
     if device_group is None:
         print("refresh-identity: DEVICE_GROUP must be set (no existing host.json to read it back from)", file=sys.stderr)
         sys.exit(2)
@@ -246,11 +259,102 @@ def update_worker():
     print(f"update-worker: {container_name} recreated on {new_image_ref}")
 
 
+def change_device_group():
+    """
+    Move this worker to a different device group: recreate its container
+    under the new worker_<device_group> name, refresh its identity to
+    match, and clean up its stale reporter directory entry under the old
+    device group.
+
+    A no-op if NEW_DEVICE_GROUP already matches the worker's current
+    device group - same idempotency shape as `update_worker`'s
+    image-digest check.
+
+    Three steps, one call, since leaving any of them undone would leave
+    the worker in an inconsistent state: the container swap alone would
+    leave host.json/the reporter directory pointing at the old device
+    group; skipping the reporter cleanup would leave a stale ghost entry
+    under the old device group forever.
+    """
+    new_device_group = os.environ["NEW_DEVICE_GROUP"]
+    device_group = _resolve_device_group()
+    if device_group is None:
+        print("change-device-group: DEVICE_GROUP must be set (no existing host.json to read it back from)", file=sys.stderr)
+        sys.exit(2)
+    if new_device_group == device_group:
+        print(f"change-device-group: already on {device_group!r}, nothing to do")
+        return
+
+    old_container_name = os.environ.get("WORKER_CONTAINER_NAME") or f"worker_{device_group}"
+    new_container_name = f"worker_{new_device_group}"
+
+    docker_socket = DockerFunctions()
+    try:
+        inspection = docker_socket.cli.inspect_container(old_container_name)
+    except Exception as e:
+        print(e, file=sys.stderr)
+        print(f"change-device-group: no running container named {old_container_name!r} to move", file=sys.stderr)
+        sys.exit(2)
+
+    # Clone the running container's own env vars, swapping only DEVICE_GROUP's
+    # value - same clone-then-recreate approach as update_worker, robust to
+    # anything hand-edited on top of gustavo's own generators.
+    env_list = [e for e in inspection["Config"]["Env"] if not e.startswith("DEVICE_GROUP=")]
+    env_list.append(f"DEVICE_GROUP={new_device_group}")
+    image_ref = inspection["Config"]["Image"]
+    host_config = inspection["HostConfig"]
+
+    docker_socket.stop_and_remove_container(old_container_name)
+    docker_socket.cli.create_container(
+        image=image_ref, name=new_container_name,
+        environment=env_list,
+        host_config=host_config,
+        labels=inspection["Config"].get("Labels", {}),
+        command=inspection["Config"]["Cmd"],
+    )
+    docker_socket.start_container(new_container_name)
+    print(f"change-device-group: recreated as {new_container_name} (DEVICE_GROUP={new_device_group})")
+
+    # host.json's node_id is read fresh inside refresh_identity - reused as-is,
+    # not regenerated, so this is a device group change, not a new identity.
+    with open(HOST_JSON_PATH) as f:
+        node_id = json.load(f)["node_id"]
+    refresh_identity(device_group=new_device_group)
+
+    # Best-effort cleanup of the stale entry under the old device group -
+    # logged, non-fatal, since the container move and identity refresh
+    # above (the parts that matter for the worker to actually function)
+    # already succeeded by this point.
+    reporter_host = os.environ.get("REPORTER_HOST")
+    if reporter_host is None:
+        return
+    reporter_port = os.environ.get("REPORTER_PORT")
+    reporter_protocol = os.environ.get("REPORTER_PROTOCOL", "http")
+    username, password = read_credential(os.environ.get("NEBULA_USERNAME"), os.environ.get("NEBULA_PASSWORD"))
+    if not username or not password:
+        print("change-device-group: no Nebula credential available - skipping stale reporter entry cleanup", file=sys.stderr)
+        return
+    try:
+        resp = requests.delete(
+            f"{reporter_protocol}://{reporter_host}:{reporter_port}/api/directory/{device_group}/{node_id}",
+            auth=(username, password), timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f"change-device-group: cleanup of stale entry under {device_group!r} failed: "
+                  f"HTTP {resp.status_code} {resp.text}", file=sys.stderr)
+        else:
+            print(f"change-device-group: removed stale reporter entry under {device_group!r}")
+    except Exception as e:
+        print(e, file=sys.stderr)
+        print(f"change-device-group: cleanup of stale entry under {device_group!r} failed", file=sys.stderr)
+
+
 ACTIONS = {
     "reset-nebula-credentials": reset_nebula_credentials,
     "reset-registry-credentials": reset_registry_credentials,
     "refresh-identity": refresh_identity,
     "update-worker": update_worker,
+    "change-device-group": change_device_group,
 }
 
 
