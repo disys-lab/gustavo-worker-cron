@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.1.4
 
 - New `change-device-group` action: moves a worker to a different device
   group in one call - recreates its container as `worker_<new group>`
